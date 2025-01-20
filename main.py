@@ -136,7 +136,7 @@ def next_page(curr_page_num):
 
 def continue_btn():
     print(f"[{date()}] Looking for continue button..")
-    continue_btn = flat_elem.find_element(By.XPATH, '//*[@title="Details"]')
+    continue_btn = flat_elem.find_element(By.XPATH, './/a[@title="Details"]')
     print(f"[{date()}] Flat link found: ", continue_btn.get_attribute('href'))
     continue_btn.location_once_scrolled_into_view
     driver.get(continue_btn.get_attribute('href'))
