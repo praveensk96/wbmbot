@@ -142,19 +142,23 @@ def continue_btn():
     driver.get(continue_btn.get_attribute('href'))
 
 def fill_form(email):
-    print(f"[{date()}] Filling out form for email adress '{email}' ..")
-    driver.find_element(By.XPATH, '//*[@id="c722"]/div/div/form/div[2]/div[1]/div/div/div[1]/label').click()
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_wbsgueltigbis"]').send_keys(user.wbs_date)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_wbszimmeranzahl"]').send_keys(user.wbs_rooms)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_einkommensgrenzenacheinkommensbescheinigung9"]').send_keys(user.wbs_num)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_name"]').send_keys(user.last_name)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_vorname"]').send_keys(user.first_name)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_strasse"]').send_keys(user.street)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_plz"]').send_keys(user.zip_code)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_ort"]').send_keys(user.city)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_e_mail"]').send_keys(email)
-    driver.find_element(By.XPATH, '//*[@id="powermail_field_telefon"]').send_keys(user.phone)
-    driver.find_element(By.XPATH, '//*[@id="c722"]/div/div/form/div[2]/div[14]/div/div/div[1]/label').click()
+    if user.wbs == 'yes':
+        print(f"[{date()}] Filling out form WBS section ...")
+        driver.find_element(By.XPATH, '//*[@id="c722"]/div/div/form/div[2]/div[2]/div/div/div[1]/label').click()
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_wbsgueltigbis"]').send_keys(user.wbs_date)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_wbszimmeranzahl"]').send_keys(user.wbs_rooms)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_einkommensgrenzenacheinkommensbescheinigung9"]').send_keys(user.wbs_num)
+    else:
+        print(f"[{date()}] Filling out form for email adress '{email}' ..")
+        driver.find_element(By.XPATH, '//*[@id="c722"]/div/div/form/div[2]/div[2]/div/div/div[2]/label').click()
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_name"]').send_keys(user.last_name)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_vorname"]').send_keys(user.first_name)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_strasse"]').send_keys(user.street)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_plz"]').send_keys(user.zip_code)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_ort"]').send_keys(user.city)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_e_mail"]').send_keys(email)
+        driver.find_element(By.XPATH, '//*[@id="powermail_field_telefon"]').send_keys(user.phone)
+        driver.find_element(By.XPATH, '//*[@id="c722"]/div/div/form/div[2]/div[18]/div/div/div[1]/label').click()
 
 # check if config exists, else start setup
 if os.path.isfile("config.yaml"):
