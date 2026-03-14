@@ -1,7 +1,7 @@
 # zsh + Starship (Powerlevel10k Style) Setup on OpenSUSE Leap 15.6 WSL
 
 **Target environment:** OpenSUSE Leap 15.6 · Windows Subsystem for Linux  
-**Constraints:** Corporate proxy (no GitHub access) · All packages installed via `zypper`  
+**Constraints:** Corporate proxy (no GitHub access) · No external zypper repos · zsh plugins loaded from local Git clones  
 **Result:** zsh with Starship prompt (pastel-powerline preset), syntax highlighting, and autosuggestions
 
 ---
@@ -42,44 +42,46 @@ zsh --version
 
 ---
 
-## Step 2 — Add OBS Repositories for zsh Plugins
+## Step 2 — Place zsh Plugin Repos Locally
 
-The `zsh-syntax-highlighting` and `zsh-autosuggestions` packages are maintained in separate
-OBS sub-projects under `shells:/zsh-users/`. Their Leap 15.6 builds are published against the
-**15.4** target, but both packages are architecture-independent (`noarch`) and install cleanly on
-Leap 15.6.
+Because external zypper repositories are not accessible, both plugins are loaded directly from
+local Git clones. The repos should be placed under `~/GitHub/`. If you have transferred them via
+an internal mirror, USB, or network share, ensure they are at the paths below:
 
-```zsh
-# zsh-syntax-highlighting repo
-sudo zypper addrepo --refresh \
-  "https://download.opensuse.org/repositories/shells:/zsh-users:/zsh-syntax-highlighting/15.4/" \
-  zsh-syntax-highlighting
-
-# zsh-autosuggestions repo
-sudo zypper addrepo --refresh \
-  "https://download.opensuse.org/repositories/shells:/zsh-users:/zsh-autosuggestions/15.4/" \
-  zsh-autosuggestions
+```
+~/GitHub/zsh-syntax-highlighting/   ← clone of zsh-users/zsh-syntax-highlighting
+~/GitHub/zsh-autosuggestions/        ← clone of zsh-users/zsh-autosuggestions
 ```
 
-Accept the GPG key when prompted (once per repo). Then refresh:
+If you still need to clone them (e.g. from an internal GitLab mirror), run:
 ```zsh
-sudo zypper refresh
+# Replace <internal-mirror> with your organisation's Git server hostname
+git clone http://<internal-mirror>/zsh-users/zsh-syntax-highlighting.git \
+  ~/GitHub/zsh-syntax-highlighting
+
+git clone http://<internal-mirror>/zsh-users/zsh-autosuggestions.git \
+  ~/GitHub/zsh-autosuggestions
 ```
+
+Verify the main scripts are present:
+```zsh
+ls ~/GitHub/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+ls ~/GitHub/zsh-autosuggestions/zsh-autosuggestions.zsh
+```
+
+Both commands should return the file path without errors before continuing.
 
 ---
 
-## Step 3 — Install zsh Plugins
+## Step 3 — Verify Plugin Scripts (no zypper install needed)
 
-```zsh
-sudo zypper install zsh-syntax-highlighting zsh-autosuggestions
-```
-
-Once installed, the plugin scripts are at:
+No package installation is required. The plugins are sourced directly from their Git clone
+directories. The key scripts and their expected paths are:
 
 | Plugin | Script path |
 |--------|-------------|
-| zsh-syntax-highlighting | `/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh` |
-| zsh-autosuggestions | `/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh` |
+| zsh-syntax-highlighting | `~/GitHub/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh` |
+| zsh-autosuggestions | `~/GitHub/zsh-autosuggestions/zsh-autosuggestions.zsh` |
 
 ---
 
@@ -202,15 +204,15 @@ bindkey '^[[H' beginning-of-line         # Home key
 bindkey '^[[F' end-of-line               # End key
 
 # ---------------------------------------------------------------------------
-# zsh-syntax-highlighting
+# zsh-syntax-highlighting  (loaded from local Git clone)
 # Must be sourced AFTER other plugins and at the END of .zshrc
 # ---------------------------------------------------------------------------
-source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+source "$HOME/GitHub/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh"
 
 # ---------------------------------------------------------------------------
-# zsh-autosuggestions
+# zsh-autosuggestions  (loaded from local Git clone)
 # ---------------------------------------------------------------------------
-source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+source "$HOME/GitHub/zsh-autosuggestions/zsh-autosuggestions.zsh"
 
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'          # Gray suggestion text
 ZSH_AUTOSUGGEST_STRATEGY=(history completion)   # Use history first, then completion
@@ -356,19 +358,26 @@ The terminal font is not a Nerd Font, or Windows Terminal is not using the corre
 
 ### Syntax highlighting not working
 
-Confirm the plugin was installed and the path exists:
+Confirm the local clone exists and the script is present:
 ```zsh
-ls /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+ls ~/GitHub/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
 ```
-If the file is missing, re-run Step 2–3. Also ensure the `source` line is present in `~/.zshrc`
-and that it appears **after** `compinit`.
+If the file is missing, re-run Step 2 to ensure the repo is cloned to the correct path.
+Also ensure the `source` line is present in `~/.zshrc` and appears **after** `compinit`.
+
+If the repo directory exists but the script still fails to load, check for zsh errors:
+```zsh
+zsh -i -c 'exit' 2>&1 | grep -i highlight
+```
 
 ### Autosuggestions not appearing
 
+Confirm the local clone exists and the script is present:
 ```zsh
-ls /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+ls ~/GitHub/zsh-autosuggestions/zsh-autosuggestions.zsh
 ```
-If missing, re-run Step 2–3. If the file exists but suggestions don't appear, check that your
+If missing, re-run Step 2 to ensure the repo is cloned to the correct path.
+If the file exists but suggestions don't appear, check that your
 `ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE` color is visible against your terminal background — change
 `fg=8` to `fg=244` (medium gray) or `fg=blue` if needed.
 
@@ -405,18 +414,14 @@ sudo systemctl restart wickedd 2>/dev/null; source /etc/sysconfig/proxy
 ```
 Or export variables directly in the current shell before running `zypper`.
 
-### GPG key import failure for OBS repos
+### Plugin version is out of date
 
-If `zypper refresh` fails with a GPG error, manually import the key:
+To update either plugin, pull the latest commits from the source and re-clone or fetch:
 ```zsh
-# For shells:/zsh-users:/zsh-syntax-highlighting
-sudo rpm --import \
-  https://download.opensuse.org/repositories/shells:/zsh-users:/zsh-syntax-highlighting/15.4/repodata/repomd.xml.key
-
-# For shells:/zsh-users:/zsh-autosuggestions
-sudo rpm --import \
-  https://download.opensuse.org/repositories/shells:/zsh-users:/zsh-autosuggestions/15.4/repodata/repomd.xml.key
+git -C ~/GitHub/zsh-syntax-highlighting pull
+git -C ~/GitHub/zsh-autosuggestions pull
 ```
+No shell restart is needed — the next `source ~/.zshrc` picks up the updated script.
 
 ---
 
@@ -426,8 +431,8 @@ sudo rpm --import \
 |------|------|
 | zsh binary | `/bin/zsh` |
 | starship binary | `/usr/bin/starship` (RPM) or `~/.cargo/bin/starship` (Cargo) |
-| zsh-syntax-highlighting script | `/usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh` |
-| zsh-autosuggestions script | `/usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh` |
+| zsh-syntax-highlighting script | `~/GitHub/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh` |
+| zsh-autosuggestions script | `~/GitHub/zsh-autosuggestions/zsh-autosuggestions.zsh` |
 | zsh config | `~/.zshrc` |
 | Starship config | `~/.config/starship.toml` |
 | zsh history | `~/.zsh_history` |
