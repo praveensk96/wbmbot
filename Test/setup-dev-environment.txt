@@ -288,19 +288,12 @@ alias gtv='git tag | sort -V'
 alias gwch='git whatchanged -p --abbrev-commit --pretty=medium'
 
 # ── Alias expansion (press Space to expand aliases inline) ────────────────
-# Stores all alias names for lookup
-typeset -a _expand_aliases
-_expand_aliases=(${(k)aliases})
-
-function _expand_alias() {
-    if [[ $_expand_aliases[(Ie)$LBUFFER] -gt 0 ]]; then
-        zle _expand_alias
-        zle expand-word
-    fi
+globalias() {
+    zle _expand_alias
     zle self-insert
 }
-zle -N _expand_alias
-bindkey -M main ' ' _expand_alias
+zle -N globalias
+bindkey -M main ' ' globalias
 
 # zsh-syntax-highlighting  (must be sourced last)
 [ -f ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && \
