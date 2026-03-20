@@ -38,18 +38,18 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-# ─── Console helpers ─────────────────────────────────────────────────────────
+# --- Console helpers ---------------------------------------------------------
 
-function Write-Step    { param([string]$Msg) Write-Host "`n▶  $Msg" -ForegroundColor Cyan }
-function Write-Success { param([string]$Msg) Write-Host "   ✔  $Msg" -ForegroundColor Green }
-function Write-Warn    { param([string]$Msg) Write-Host "   ⚠  $Msg" -ForegroundColor Yellow }
-function Write-Fail    { param([string]$Msg) Write-Host "   ✖  $Msg" -ForegroundColor Red }
+function Write-Step    { param([string]$Msg) Write-Host "`n>>  $Msg" -ForegroundColor Cyan }
+function Write-Success { param([string]$Msg) Write-Host "   [OK]  $Msg" -ForegroundColor Green }
+function Write-Warn    { param([string]$Msg) Write-Host "   [!!]  $Msg" -ForegroundColor Yellow }
+function Write-Fail    { param([string]$Msg) Write-Host "   [XX]  $Msg" -ForegroundColor Red }
 
-# ─── Self-elevation ──────────────────────────────────────────────────────────
+# --- Self-elevation ----------------------------------------------------------
 
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
-    Write-Warn "Not running as Administrator — relaunching elevated…"
+    Write-Warn "Not running as Administrator -- relaunching elevated..."
     $escapedScript = $PSCommandPath -replace '"', '\"'
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
     if ($ZipFilesPath -ne $PSScriptRoot)  { $argList += " -ZipFilesPath `"$ZipFilesPath`""  }
@@ -58,7 +58,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     exit $LASTEXITCODE
 }
 
-# ─── Verify required zip files ───────────────────────────────────────────────
+# --- Verify required zip files -----------------------------------------------
 
 $required = [ordered]@{
     FiraCode           = "FiraCode.zip"
@@ -81,9 +81,9 @@ New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
 try {
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 1. INSTALL FIRACODE FONT IN WINDOWS
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Installing FiraCode font in Windows"
 
@@ -115,7 +115,7 @@ $installed = 0
 foreach ($font in $fontFiles) {
     $dest = Join-Path $fontsFolder $font.Name
     if (Test-Path $dest) {
-        Write-Warn "$($font.Name) already present — skipping"
+        Write-Warn "$($font.Name) already present -- skipping"
         continue
     }
     Copy-Item -Path $font.FullName -Destination $dest -Force
@@ -131,9 +131,9 @@ foreach ($font in $fontFiles) {
 [FontHelper]::BroadcastFontChange()
 Write-Success "FiraCode: $installed file(s) installed, $(($fontFiles.Count - $installed)) already present"
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 2. INSTALL ZSH + STARSHIP IN WSL
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Installing ZSH + Starship in WSL"
 
@@ -166,13 +166,13 @@ Write-Success "ZSH and dependencies installed"
 Invoke-Wsl "curl -sS https://starship.rs/install.sh | sh -s -- --yes"
 Write-Success "Starship installed"
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 3. EXTRACT ZSH PLUGINS INTO WSL
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Extracting ZSH plugins in WSL"
 
-# Convert a Windows absolute path to its /mnt/… WSL equivalent
+# Convert a Windows absolute path to its /mnt/... WSL equivalent
 function ConvertTo-WslPath {
     param([string] $WindowsPath)
     $abs   = (Resolve-Path $WindowsPath).Path
@@ -206,20 +206,20 @@ echo 'Extracted $pluginName'
     Write-Success "~/.zsh/$pluginName extracted"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 4. CONFIGURE .zshrc
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Configuring ~/.zshrc"
 
 $zshrcBlock = @'
 
-# ── Dev environment (auto-configured) ─────────────────────────────────────
+# -- Dev environment (auto-configured) -------------------------------------
 # zsh-autosuggestions
 [ -f ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh ] && \
     source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
 
-# ── Git aliases (oh-my-zsh style) ────────────────────────────────────────
+# -- Git aliases (oh-my-zsh style) ----------------------------------------
 alias g='git'
 alias ga='git add'
 alias gaa='git add --all'
@@ -287,7 +287,7 @@ alias gts='git tag --sign'
 alias gtv='git tag | sort -V'
 alias gwch='git whatchanged -p --abbrev-commit --pretty=medium'
 
-# ── Alias expansion (press Space to expand aliases inline) ────────────────
+# -- Alias expansion (press Space to expand aliases inline) ----------------
 globalias() {
     zle _expand_alias
     zle self-insert
@@ -302,7 +302,7 @@ bindkey -M main ' ' globalias
 # Starship prompt
 export STARSHIP_CONFIG=~/.config/starship.toml
 eval "$(starship init zsh)"
-# ──────────────────────────────────────────────────────────────────────────
+# --------------------------------------------------------------------------
 '@
 
 # Write the block to a temp file so we can cat it into WSL without quoting headaches
@@ -315,15 +315,15 @@ if ! grep -q 'Dev environment (auto-configured)' ~/.zshrc 2>/dev/null; then
     cat '$wslZshrcBlockFile' >> ~/.zshrc
     echo '.zshrc updated'
 else
-    echo '.zshrc block already present — skipping'
+    echo '.zshrc block already present -- skipping'
 fi
 "@
 Invoke-Wsl $appendCmd
 Write-Success ".zshrc configured"
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 5. COPY starship.toml TO WSL (if present alongside this script)
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 $localToml = Join-Path $PSScriptRoot "starship.toml"
 if (Test-Path $localToml) {
@@ -332,20 +332,20 @@ if (Test-Path $localToml) {
     Invoke-Wsl "mkdir -p ~/.config && cp -f '$wslToml' ~/.config/starship.toml"
     Write-Success "starship.toml copied to ~/.config/starship.toml"
 } else {
-    Write-Warn "starship.toml not found next to script — skipping (Starship will use defaults)"
+    Write-Warn "starship.toml not found next to script -- skipping (Starship will use defaults)"
 }
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 6. SET ZSH AS DEFAULT SHELL IN WSL
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Setting ZSH as the default shell in WSL"
 Invoke-Wsl 'sudo chsh -s "$(which zsh)" "$USER"'
 Write-Success "Default shell changed to ZSH"
 
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 # 7. UPDATE VS CODE settings.json
-# ═══════════════════════════════════════════════════════════════════════════
+# ===========================================================================
 
 Write-Step "Updating VS Code settings.json"
 
@@ -372,7 +372,7 @@ foreach ($settingsPath in $candidatePaths) {
     try {
         $settings = $stripped | ConvertFrom-Json
     } catch {
-        Write-Warn "Could not parse $settingsPath — skipping: $_"
+        Write-Warn "Could not parse $settingsPath -- skipping: $_"
         continue
     }
 
@@ -387,7 +387,7 @@ foreach ($settingsPath in $candidatePaths) {
 }
 
 if (-not $updatedAny) {
-    Write-Warn "No VS Code settings.json found — creating one at the stable path"
+    Write-Warn "No VS Code settings.json found -- creating one at the stable path"
     $stablePath = "$env:APPDATA\Code\User\settings.json"
     $dir = Split-Path $stablePath
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
@@ -396,16 +396,16 @@ if (-not $updatedAny) {
 }
 
 } finally {
-    # ─── Cleanup ─────────────────────────────────────────────────────────────
+    # --- Cleanup -------------------------------------------------------------
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 }
 
 Write-Host ""
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
-Write-Host "  ✅  Setup complete!" -ForegroundColor Green
+Write-Host "=======================================================" -ForegroundColor Cyan
+Write-Host "  [DONE]  Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Next steps:" -ForegroundColor White
-Write-Host "    • Open a new WSL terminal — ZSH + Starship will be active" -ForegroundColor Gray
-Write-Host "    • Reload VS Code to pick up the new FiraCode font settings" -ForegroundColor Gray
-Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "    * Open a new WSL terminal -- ZSH + Starship will be active" -ForegroundColor Gray
+Write-Host "    * Reload VS Code to pick up the new FiraCode font settings" -ForegroundColor Gray
+Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
