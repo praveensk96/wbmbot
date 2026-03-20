@@ -198,14 +198,14 @@ foreach ($pluginName in $pluginMap.Keys) {
     # then place it at the canonical path ~/.zsh/<plugin-name>
     $extractCmd = @"
 set -e
-_tmp=\$(mktemp -d)
-unzip -q '$wslZip' -d "\$_tmp"
-_src=\$(find "\$_tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
-if [ -z "\$_src" ]; then echo 'Nothing extracted from $wslZip' >&2; exit 1; fi
+_tmp=`$(mktemp -d)
+unzip -q '$wslZip' -d "`$_tmp"
+_src=`$(find "`$_tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
+if [ -z "`$_src" ]; then echo 'Nothing extracted from $wslZip' >&2; exit 1; fi
 mkdir -p ~/.zsh
 rm -rf ~/.zsh/$pluginName
-mv "\$_src" ~/.zsh/$pluginName
-rm -rf "\$_tmp"
+mv "`$_src" ~/.zsh/$pluginName
+rm -rf "`$_tmp"
 echo 'Extracted $pluginName'
 "@
     Invoke-Wsl $extractCmd
