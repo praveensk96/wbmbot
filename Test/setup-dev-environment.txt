@@ -1,0 +1,337 @@
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    One-click development environment setup for Windows + WSL.
+.DESCRIPTION
+    1. Installs FiraCode font in Windows
+    2. Installs ZSH + Starship terminal in WSL
+    3. Extracts zsh-autosuggestions and zsh-syntax-highlighting into WSL
+    4. Copies starship.toml (if present next to this script) to WSL ~/.config/
+    5. Sets ZSH as the default WSL shell
+    6. Configures VS Code settings.json with FiraCode as editor and terminal font
+
+.PARAMETER ZipFilesPath
+    Directory that contains FiraCode.zip, zsh-autosuggestions.zip and
+    zsh-syntax-highlighting.zip.  Defaults to the folder this script lives in.
+
+.PARAMETER WslDistro
+    Name of the WSL distribution to target (e.g. "Ubuntu-22.04").
+    Leave empty to target the default distribution.
+
+.EXAMPLE
+    .\setup-dev-environment.ps1
+
+.EXAMPLE
+    .\setup-dev-environment.ps1 -ZipFilesPath "C:\Downloads" -WslDistro "Ubuntu-22.04"
+
+.NOTES
+    Font installation requires Administrator privileges.
+    The script will automatically re-launch itself elevated if needed.
+#>
+
+[CmdletBinding()]
+param(
+    [string] $ZipFilesPath = $PSScriptRoot,
+    [string] $WslDistro    = ""
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+# ─── Console helpers ─────────────────────────────────────────────────────────
+
+function Write-Step    { param([string]$Msg) Write-Host "`n▶  $Msg" -ForegroundColor Cyan }
+function Write-Success { param([string]$Msg) Write-Host "   ✔  $Msg" -ForegroundColor Green }
+function Write-Warn    { param([string]$Msg) Write-Host "   ⚠  $Msg" -ForegroundColor Yellow }
+function Write-Fail    { param([string]$Msg) Write-Host "   ✖  $Msg" -ForegroundColor Red }
+
+# ─── Self-elevation ──────────────────────────────────────────────────────────
+
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
+    Write-Warn "Not running as Administrator — relaunching elevated…"
+    $escapedScript = $PSCommandPath -replace '"', '\"'
+    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
+    if ($ZipFilesPath -ne $PSScriptRoot)  { $argList += " -ZipFilesPath `"$ZipFilesPath`""  }
+    if ($WslDistro)                        { $argList += " -WslDistro `"$WslDistro`""         }
+    Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait
+    exit $LASTEXITCODE
+}
+
+# ─── Verify required zip files ───────────────────────────────────────────────
+
+$required = [ordered]@{
+    FiraCode           = "FiraCode.zip"
+    AutoSuggestions    = "zsh-autosuggestions.zip"
+    SyntaxHighlighting = "zsh-syntax-highlighting.zip"
+}
+
+foreach ($key in $required.Keys) {
+    $fullPath = Join-Path $ZipFilesPath $required[$key]
+    if (-not (Test-Path $fullPath)) {
+        Write-Fail "Required file not found: $fullPath"
+        exit 1
+    }
+    $required[$key] = $fullPath   # resolve to absolute path
+}
+
+# Scratch directory (cleaned up on exit)
+$tempDir = Join-Path $env:TEMP "dev-env-setup-$(Get-Random)"
+New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+
+try {
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 1. INSTALL FIRACODE FONT IN WINDOWS
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Installing FiraCode font in Windows"
+
+$fontExtractDir = Join-Path $tempDir "FiraCode"
+Expand-Archive -Path $required.FiraCode -DestinationPath $fontExtractDir -Force
+
+$fontFiles    = Get-ChildItem -Path $fontExtractDir -Recurse -Include "*.ttf", "*.otf"
+$fontsFolder  = "$env:SystemRoot\Fonts"
+$fontsRegKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
+
+# Notify all running apps about the font change after installation
+$notifySource = @"
+using System;
+using System.Runtime.InteropServices;
+public static class FontHelper {
+    [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
+    private static extern IntPtr SendMessageTimeout(
+        IntPtr hWnd, uint Msg, UIntPtr wParam, IntPtr lParam,
+        uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);
+
+    public static void BroadcastFontChange() {
+        UIntPtr result;
+        SendMessageTimeout(new IntPtr(0xFFFF), 0x001D, UIntPtr.Zero,
+                           IntPtr.Zero, 2u, 1000u, out result);
+    }
+}
+"@
+Add-Type -TypeDefinition $notifySource -Language CSharp
+
+$installed = 0
+foreach ($font in $fontFiles) {
+    $dest = Join-Path $fontsFolder $font.Name
+    if (Test-Path $dest) {
+        Write-Warn "$($font.Name) already present — skipping"
+        continue
+    }
+    Copy-Item -Path $font.FullName -Destination $dest -Force
+    # Register: key name ends with "(TrueType)" or "(OpenType)"
+    $ext    = $font.Extension.TrimStart('.').ToUpper()
+    $regExt = if ($ext -eq "OTF") { "OpenType" } else { "TrueType" }
+    $regName = [IO.Path]::GetFileNameWithoutExtension($font.Name) + " ($regExt)"
+    New-ItemProperty -Path $fontsRegKey -Name $regName -Value $font.Name `
+                     -PropertyType String -Force | Out-Null
+    $installed++
+}
+
+[FontHelper]::BroadcastFontChange()
+Write-Success "FiraCode: $installed file(s) installed, $(($fontFiles.Count - $installed)) already present"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 2. INSTALL ZSH + STARSHIP IN WSL
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Installing ZSH + Starship in WSL"
+
+# Build a common argument prefix for wsl.exe
+$wslPrefix = @()
+if ($WslDistro) { $wslPrefix = @("--distribution", $WslDistro) }
+
+function Invoke-Wsl {
+    param([string] $Command, [switch] $IgnoreErrors)
+    # Run through bash so we can use shell features like pipes and &&
+    $wslArgs = $wslPrefix + @("--", "bash", "-lc", $Command)
+    & wsl @wslArgs
+    if (-not $IgnoreErrors -and $LASTEXITCODE -ne 0) {
+        throw "WSL command failed (exit $LASTEXITCODE)`nCommand: $Command"
+    }
+}
+
+# Detect package manager (apt / dnf / pacman)
+$pkgInstall = @"
+if   command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y zsh unzip curl
+elif command -v dnf     &>/dev/null; then sudo dnf install -y zsh unzip curl
+elif command -v pacman  &>/dev/null; then sudo pacman -Sy --noconfirm zsh unzip curl
+else echo 'Unsupported package manager' >&2; exit 1
+fi
+"@
+Invoke-Wsl $pkgInstall
+Write-Success "ZSH and dependencies installed"
+
+# Install Starship (non-interactive)
+Invoke-Wsl "curl -sS https://starship.rs/install.sh | sh -s -- --yes"
+Write-Success "Starship installed"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 3. EXTRACT ZSH PLUGINS INTO WSL
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Extracting ZSH plugins in WSL"
+
+# Convert a Windows absolute path to its /mnt/… WSL equivalent
+function ConvertTo-WslPath {
+    param([string] $WindowsPath)
+    $abs   = (Resolve-Path $WindowsPath).Path
+    $drive = $abs.Substring(0, 1).ToLower()
+    $rest  = $abs.Substring(2).Replace('\', '/')
+    return "/mnt/$drive$rest"
+}
+
+$pluginMap = [ordered]@{
+    "zsh-autosuggestions"    = $required.AutoSuggestions
+    "zsh-syntax-highlighting" = $required.SyntaxHighlighting
+}
+
+foreach ($pluginName in $pluginMap.Keys) {
+    $wslZip = ConvertTo-WslPath $pluginMap[$pluginName]
+    # Extract to a temp dir, find the top-level directory (handles -master / -main suffixes),
+    # then place it at the canonical path ~/.zsh/<plugin-name>
+    $extractCmd = @"
+set -e
+_tmp=\$(mktemp -d)
+unzip -q '$wslZip' -d "\$_tmp"
+_src=\$(find "\$_tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
+if [ -z "\$_src" ]; then echo 'Nothing extracted from $wslZip' >&2; exit 1; fi
+mkdir -p ~/.zsh
+rm -rf ~/.zsh/$pluginName
+mv "\$_src" ~/.zsh/$pluginName
+rm -rf "\$_tmp"
+echo 'Extracted $pluginName'
+"@
+    Invoke-Wsl $extractCmd
+    Write-Success "~/.zsh/$pluginName extracted"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 4. CONFIGURE .zshrc
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Configuring ~/.zshrc"
+
+$zshrcBlock = @'
+
+# ── Dev environment (auto-configured) ─────────────────────────────────────
+# zsh-autosuggestions
+[ -f ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh ] && \
+    source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+# zsh-syntax-highlighting  (must be sourced last)
+[ -f ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && \
+    source ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+# Starship prompt
+export STARSHIP_CONFIG=~/.config/starship.toml
+eval "$(starship init zsh)"
+# ──────────────────────────────────────────────────────────────────────────
+'@
+
+# Write the block to a temp file so we can cat it into WSL without quoting headaches
+$zshrcBlockFile    = Join-Path $tempDir "zshrc_block.sh"
+Set-Content -Path $zshrcBlockFile -Value $zshrcBlock -Encoding UTF8 -NoNewline
+$wslZshrcBlockFile = ConvertTo-WslPath $zshrcBlockFile
+
+$appendCmd = @"
+if ! grep -q 'Dev environment (auto-configured)' ~/.zshrc 2>/dev/null; then
+    cat '$wslZshrcBlockFile' >> ~/.zshrc
+    echo '.zshrc updated'
+else
+    echo '.zshrc block already present — skipping'
+fi
+"@
+Invoke-Wsl $appendCmd
+Write-Success ".zshrc configured"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 5. COPY starship.toml TO WSL (if present alongside this script)
+# ═══════════════════════════════════════════════════════════════════════════
+
+$localToml = Join-Path $PSScriptRoot "starship.toml"
+if (Test-Path $localToml) {
+    Write-Step "Copying starship.toml to WSL ~/.config/"
+    $wslToml = ConvertTo-WslPath $localToml
+    Invoke-Wsl "mkdir -p ~/.config && cp -f '$wslToml' ~/.config/starship.toml"
+    Write-Success "starship.toml copied to ~/.config/starship.toml"
+} else {
+    Write-Warn "starship.toml not found next to script — skipping (Starship will use defaults)"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 6. SET ZSH AS DEFAULT SHELL IN WSL
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Setting ZSH as the default shell in WSL"
+Invoke-Wsl 'sudo chsh -s "$(which zsh)" "$USER"'
+Write-Success "Default shell changed to ZSH"
+
+# ═══════════════════════════════════════════════════════════════════════════
+# 7. UPDATE VS CODE settings.json
+# ═══════════════════════════════════════════════════════════════════════════
+
+Write-Step "Updating VS Code settings.json"
+
+$candidatePaths = @(
+    "$env:APPDATA\Code\User\settings.json"           # VS Code (stable)
+    "$env:APPDATA\Code - Insiders\User\settings.json" # VS Code Insiders
+)
+
+$fontPatches = [ordered]@{
+    "editor.fontFamily"              = "'Fira Code', 'Cascadia Code', Consolas, monospace"
+    "editor.fontLigatures"           = $true
+    "terminal.integrated.fontFamily" = "'Fira Code'"
+}
+
+$updatedAny = $false
+
+foreach ($settingsPath in $candidatePaths) {
+    if (-not (Test-Path $settingsPath)) { continue }
+
+    # Read raw text; strip JSONC single-line comments before deserialising
+    $raw      = Get-Content -Raw -Path $settingsPath -Encoding UTF8
+    $stripped = $raw -replace '(?m)^\s*//[^\r\n]*', ''
+
+    try {
+        $settings = $stripped | ConvertFrom-Json
+    } catch {
+        Write-Warn "Could not parse $settingsPath — skipping: $_"
+        continue
+    }
+
+    foreach ($key in $fontPatches.Keys) {
+        $settings | Add-Member -NotePropertyName $key -NotePropertyValue $fontPatches[$key] -Force
+    }
+
+    # Write back as valid JSON (VS Code tolerates fully valid JSON in settings.json)
+    $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
+    Write-Success "Updated: $settingsPath"
+    $updatedAny = $true
+}
+
+if (-not $updatedAny) {
+    Write-Warn "No VS Code settings.json found — creating one at the stable path"
+    $stablePath = "$env:APPDATA\Code\User\settings.json"
+    $dir = Split-Path $stablePath
+    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $fontPatches | ConvertTo-Json -Depth 5 | Set-Content -Path $stablePath -Encoding UTF8
+    Write-Success "Created: $stablePath"
+}
+
+} finally {
+    # ─── Cleanup ─────────────────────────────────────────────────────────────
+    Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+}
+
+Write-Host ""
+Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host "  ✅  Setup complete!" -ForegroundColor Green
+Write-Host ""
+Write-Host "  Next steps:" -ForegroundColor White
+Write-Host "    • Open a new WSL terminal — ZSH + Starship will be active" -ForegroundColor Gray
+Write-Host "    • Reload VS Code to pick up the new FiraCode font settings" -ForegroundColor Gray
+Write-Host "═══════════════════════════════════════════════════════" -ForegroundColor Cyan
+Write-Host ""
