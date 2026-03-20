@@ -153,31 +153,6 @@ Write-Step "Installing ZSH + Starship in WSL"
 $wslPrefix = @()
 if ($WslDistro) { $wslPrefix = @("--distribution", $WslDistro) }
 
-function Invoke-Wsl {
-    param([string] $Command, [switch] $IgnoreErrors)
-    # Strip Windows CR so bash receives clean LF-only line endings
-    $Command = $Command -replace "`r`n", "`n" -replace "`r", "`n"
-    # Run through bash so we can use shell features like pipes and &&
-    $wslArgs = $wslPrefix + @("--", "bash", "-lc", $Command)
-    & wsl @wslArgs
-    if (-not $IgnoreErrors -and $LASTEXITCODE -ne 0) {
-        throw "WSL command failed (exit $LASTEXITCODE)`nCommand: $Command"
-    }
-}
-
-Invoke-Wsl "sudo zypper --non-interactive install zsh unzip curl"
-Write-Success "ZSH and dependencies installed"
-
-# Install Starship via zypper
-Invoke-Wsl "sudo zypper --non-interactive install starship"
-Write-Success "Starship installed"
-
-# ===========================================================================
-# 3. EXTRACT ZSH PLUGINS INTO WSL
-# ===========================================================================
-
-Write-Step "Extracting ZSH plugins in WSL"
-
 # Convert a Windows absolute path to its /mnt/... WSL equivalent
 function ConvertTo-WslPath {
     param([string] $WindowsPath)
@@ -187,170 +162,26 @@ function ConvertTo-WslPath {
     return "/mnt/$drive$rest"
 }
 
-$pluginMap = [ordered]@{
-    "zsh-autosuggestions"    = $required.AutoSuggestions
-    "zsh-syntax-highlighting" = $required.SyntaxHighlighting
-}
-
-foreach ($pluginName in $pluginMap.Keys) {
-    $wslZip = ConvertTo-WslPath $pluginMap[$pluginName]
-    # Extract to a temp dir, find the top-level directory (handles -master / -main suffixes),
-    # then place it at the canonical path ~/.zsh/<plugin-name>
-    $extractCmd = @"
-set -e
-TMP_DIR=`$(/usr/bin/mktemp -d)
-unzip -q '$wslZip' -d "`$TMP_DIR"
-SRC_DIR=`$(find "`$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -1)
-if [ -z "`$SRC_DIR" ]; then echo 'Nothing extracted from $wslZip' >&2; exit 1; fi
-mkdir -p ~/.zsh
-rm -rf ~/.zsh/$pluginName
-mv "`$SRC_DIR" ~/.zsh/$pluginName
-rm -rf "`$TMP_DIR"
-echo 'Extracted $pluginName'
-"@
-    Invoke-Wsl $extractCmd
-    Write-Success "~/.zsh/$pluginName extracted"
-}
-
-# ===========================================================================
-# 4. CONFIGURE .zshrc
-# ===========================================================================
-
-Write-Step "Configuring ~/.zshrc"
-
-$zshrcBlock = @'
-
-# -- Dev environment (auto-configured) -------------------------------------
-# zsh-autosuggestions
-[ -f ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh ] && \
-    source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
-
-# -- Git aliases (oh-my-zsh style) ----------------------------------------
-alias g='git'
-alias ga='git add'
-alias gaa='git add --all'
-alias gap='git add --patch'
-alias gb='git branch'
-alias gba='git branch --all'
-alias gbd='git branch --delete'
-alias gbD='git branch --delete --force'
-alias gc='git commit --verbose'
-alias gc!='git commit --verbose --amend'
-alias gcn!='git commit --verbose --amend --no-edit'
-alias gca='git commit --verbose --all'
-alias gca!='git commit --verbose --all --amend'
-alias gcan!='git commit --verbose --all --amend --no-edit'
-alias gcam='git commit --all --message'
-alias gcmsg='git commit --message'
-alias gco='git checkout'
-alias gcb='git checkout -b'
-alias gcl='git clone --recurse-submodules'
-alias gcp='git cherry-pick'
-alias gcpa='git cherry-pick --abort'
-alias gcpc='git cherry-pick --continue'
-alias gd='git diff'
-alias gds='git diff --staged'
-alias gdt='git diff-tree --no-commit-id --name-only -r'
-alias gf='git fetch'
-alias gfa='git fetch --all --prune --jobs=10'
-alias gl='git pull'
-alias glg='git log --stat'
-alias glgg='git log --graph'
-alias glgga='git log --graph --decorate --all'
-alias glo='git log --oneline --decorate'
-alias glog='git log --oneline --decorate --graph'
-alias gloga='git log --oneline --decorate --graph --all'
-alias gm='git merge'
-alias gma='git merge --abort'
-alias gp='git push'
-alias gpd='git push --dry-run'
-alias gpf='git push --force-with-lease --force-if-includes'
-alias gpf!='git push --force'
-alias gpsup='git push --set-upstream origin $(git branch --show-current)'
-alias gr='git remote'
-alias gra='git remote add'
-alias grb='git rebase'
-alias grba='git rebase --abort'
-alias grbc='git rebase --continue'
-alias grbi='git rebase --interactive'
-alias grh='git reset'
-alias grhh='git reset --hard'
-alias grm='git rm'
-alias grmc='git rm --cached'
-alias grs='git restore'
-alias grss='git restore --staged'
-alias gsh='git show'
-alias gss='git status --short'
-alias gst='git status'
-alias gsta='git stash push'
-alias gstaa='git stash apply'
-alias gstd='git stash drop'
-alias gstl='git stash list'
-alias gstp='git stash pop'
-alias gsw='git switch'
-alias gswc='git switch --create'
-alias gts='git tag --sign'
-alias gtv='git tag | sort -V'
-alias gwch='git whatchanged -p --abbrev-commit --pretty=medium'
-
-# -- Alias expansion (press Space to expand aliases inline) ----------------
-globalias() {
-    zle _expand_alias
-    zle self-insert
-}
-zle -N globalias
-bindkey -M main ' ' globalias
-
-# zsh-syntax-highlighting  (must be sourced last)
-[ -f ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && \
-    source ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
-
-# Starship prompt
-export STARSHIP_CONFIG=~/.config/starship.toml
-eval "$(starship init zsh)"
-# --------------------------------------------------------------------------
-'@
-
-# Write the block to a temp file so we can cat it into WSL without quoting headaches
-$zshrcBlockFile    = Join-Path $tempDir "zshrc_block.sh"
-Set-Content -Path $zshrcBlockFile -Value $zshrcBlock -Encoding UTF8 -NoNewline
-$wslZshrcBlockFile = ConvertTo-WslPath $zshrcBlockFile
-
-$appendCmd = @"
-if ! grep -q 'Dev environment (auto-configured)' ~/.zshrc 2>/dev/null; then
-    cat '$wslZshrcBlockFile' >> ~/.zshrc
-    echo '.zshrc updated'
-else
-    echo '.zshrc block already present -- skipping'
-fi
-"@
-Invoke-Wsl $appendCmd
-Write-Success ".zshrc configured"
-
-# ===========================================================================
-# 5. COPY starship.toml TO WSL (if present alongside this script)
-# ===========================================================================
+Write-Step "Running Setup Script in WSL"
+$wslSetupScript = ConvertTo-WslPath (Join-Path $PSScriptRoot "setup-wsl.sh")
+$wslAutoSugg    = ConvertTo-WslPath $required.AutoSuggestions
+$wslSynHigh     = ConvertTo-WslPath $required.SyntaxHighlighting
 
 $localToml = Join-Path $PSScriptRoot "starship.toml"
+$wslToml = ""
 if (Test-Path $localToml) {
-    Write-Step "Copying starship.toml to WSL ~/.config/"
     $wslToml = ConvertTo-WslPath $localToml
-    Invoke-Wsl "mkdir -p ~/.config && cp -f '$wslToml' ~/.config/starship.toml"
-    Write-Success "starship.toml copied to ~/.config/starship.toml"
-} else {
-    Write-Warn "starship.toml not found next to script -- skipping (Starship will use defaults)"
 }
 
-# ===========================================================================
-# 6. SET ZSH AS DEFAULT SHELL IN WSL
-# ===========================================================================
+$wslArgs = $wslPrefix + @("--", "bash", "-e", $wslSetupScript, $wslAutoSugg, $wslSynHigh, $wslToml)
+& wsl @wslArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "WSL setup script failed (exit $LASTEXITCODE)"
+}
+Write-Success "WSL setup completed successfully"
 
-Write-Step "Setting ZSH as the default shell in WSL"
-Invoke-Wsl 'sudo chsh -s "$(which zsh)" "$USER"'
-Write-Success "Default shell changed to ZSH"
-
 # ===========================================================================
-# 7. UPDATE VS CODE settings.json
+# 3. UPDATE VS CODE settings.json
 # ===========================================================================
 
 Write-Step "Updating VS Code settings.json"
