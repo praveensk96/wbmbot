@@ -60,7 +60,7 @@ $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Warn "Not running as Administrator -- relaunching elevated..."
     $escapedScript = $PSCommandPath -replace '"', '\"'
-    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
+    $argList = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
     if ($ZipFilesPath -ne $PSScriptRoot)  { $argList += " -ZipFilesPath `"$ZipFilesPath`""  }
     if ($WslDistro)                        { $argList += " -WslDistro `"$WslDistro`""         }
     $proc = Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait -PassThru
@@ -100,12 +100,14 @@ Write-Step "Installing FiraCode font in Windows"
 $fontExtractDir = Join-Path $tempDir "FiraCode"
 Expand-Archive -Path $required.FiraCode -DestinationPath $fontExtractDir -Force
 
-$fontFiles    = Get-ChildItem -Path (Join-Path $fontExtractDir '*') -Recurse -Include "*.ttf", "*.otf"
+$fontFiles    = Get-ChildItem -Path $fontExtractDir -Recurse -Include "*.ttf", "*.otf"
 $fontsFolder  = "$env:SystemRoot\Fonts"
 $fontsRegKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
 
 # Notify all running apps about the font change after installation
 $notifySource = @'
+using System;
+using System.Runtime.InteropServices;
 public static class FontHelper {
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
     private static extern IntPtr SendMessageTimeout(
@@ -119,7 +121,7 @@ public static class FontHelper {
     }
 }
 '@
-Add-Type -TypeDefinition $notifySource -Language CSharp -UsingNamespace System, System.Runtime.InteropServices
+Add-Type -TypeDefinition $notifySource -Language CSharp
 
 $installed = 0
 foreach ($font in $fontFiles) {
@@ -131,7 +133,7 @@ foreach ($font in $fontFiles) {
     Copy-Item -Path $font.FullName -Destination $dest -Force
     # Register: key name ends with "(TrueType)" or "(OpenType)"
     $ext    = $font.Extension.TrimStart('.').ToUpper()
-    $regExt = $(if ($ext -eq "OTF") { "OpenType" } else { "TrueType" })
+    $regExt = if ($ext -eq "OTF") { "OpenType" } else { "TrueType" }
     $regName = [IO.Path]::GetFileNameWithoutExtension($font.Name) + " ($regExt)"
     New-ItemProperty -Path $fontsRegKey -Name $regName -Value $font.Name `
                      -PropertyType String -Force | Out-Null
@@ -192,21 +194,22 @@ $pluginMap = [ordered]@{
 
 foreach ($pluginName in $pluginMap.Keys) {
     $wslZip = ConvertTo-WslPath $pluginMap[$pluginName]
+    $escapedWslZip = $wslZip -replace "'", "'\"'\"'"
+    $escapedPluginName = $pluginName -replace "'", "'\"'\"'"
     # Extract to a temp dir, find the top-level directory (handles -master / -main suffixes),
     # then place it at the canonical path ~/.zsh/<plugin-name>
     $extractCmd = @'
 set -e
 _tmp=$(mktemp -d)
-unzip -q '__ZIP__' -d "$_tmp"
+unzip -q '{0}' -d "$_tmp"
 _src=$(find "$_tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
-if [ -z "$_src" ]; then echo 'Nothing extracted from __ZIP__' >&2; exit 1; fi
+if [ -z "$_src" ]; then echo "Nothing extracted from {0}" >&2; exit 1; fi
 mkdir -p ~/.zsh
-rm -rf ~/.zsh/__PLUGIN__
-mv "$_src" ~/.zsh/__PLUGIN__
+rm -rf ~/.zsh/{1}
+mv "$_src" ~/.zsh/{1}
 rm -rf "$_tmp"
-echo 'Extracted __PLUGIN__'
-'@
-    $extractCmd = $extractCmd.Replace('__ZIP__', $wslZip).Replace('__PLUGIN__', $pluginName)
+echo "Extracted {1}"
+'@ -f $escapedWslZip, $escapedPluginName
     Invoke-Wsl $extractCmd
     Write-Success "~/.zsh/$pluginName extracted"
 }
@@ -315,15 +318,14 @@ $zshrcBlockFile    = Join-Path $tempDir "zshrc_block.sh"
 Set-Content -Path $zshrcBlockFile -Value $zshrcBlock -Encoding UTF8 -NoNewline
 $wslZshrcBlockFile = ConvertTo-WslPath $zshrcBlockFile
 
-$appendCmd = @'
+$appendCmd = @"
 if ! grep -q 'Dev environment (auto-configured)' ~/.zshrc 2>/dev/null; then
-    cat '__BLOCKFILE__' >> ~/.zshrc
+    cat '$wslZshrcBlockFile' >> ~/.zshrc
     echo '.zshrc updated'
 else
     echo '.zshrc block already present -- skipping'
 fi
-'@
-$appendCmd = $appendCmd.Replace('__BLOCKFILE__', $wslZshrcBlockFile)
+"@
 Invoke-Wsl $appendCmd
 Write-Success ".zshrc configured"
 
