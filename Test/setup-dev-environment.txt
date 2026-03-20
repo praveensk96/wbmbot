@@ -194,22 +194,20 @@ $pluginMap = [ordered]@{
 
 foreach ($pluginName in $pluginMap.Keys) {
     $wslZip = ConvertTo-WslPath $pluginMap[$pluginName]
-    $escapedWslZip = $wslZip -replace "'", "'\"'\"'"
-    $escapedPluginName = $pluginName -replace "'", "'\"'\"'"
     # Extract to a temp dir, find the top-level directory (handles -master / -main suffixes),
     # then place it at the canonical path ~/.zsh/<plugin-name>
-    $extractCmd = @'
+    $extractCmd = @"
 set -e
-_tmp=$(mktemp -d)
-unzip -q '{0}' -d "$_tmp"
-_src=$(find "$_tmp" -maxdepth 1 -mindepth 1 -type d | head -1)
-if [ -z "$_src" ]; then echo "Nothing extracted from {0}" >&2; exit 1; fi
+TMP_DIR=`$(/usr/bin/mktemp -d)
+unzip -q '$wslZip' -d "`$TMP_DIR"
+SRC_DIR=`$(find "`$TMP_DIR" -maxdepth 1 -mindepth 1 -type d | head -1)
+if [ -z "`$SRC_DIR" ]; then echo 'Nothing extracted from $wslZip' >&2; exit 1; fi
 mkdir -p ~/.zsh
-rm -rf ~/.zsh/{1}
-mv "$_src" ~/.zsh/{1}
-rm -rf "$_tmp"
-echo "Extracted {1}"
-'@ -f $escapedWslZip, $escapedPluginName
+rm -rf ~/.zsh/$pluginName
+mv "`$SRC_DIR" ~/.zsh/$pluginName
+rm -rf "`$TMP_DIR"
+echo 'Extracted $pluginName'
+"@
     Invoke-Wsl $extractCmd
     Write-Success "~/.zsh/$pluginName extracted"
 }
