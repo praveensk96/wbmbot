@@ -54,8 +54,8 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administra
     $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
     if ($ZipFilesPath -ne $PSScriptRoot)  { $argList += " -ZipFilesPath `"$ZipFilesPath`""  }
     if ($WslDistro)                        { $argList += " -WslDistro `"$WslDistro`""         }
-    Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait
-    exit $LASTEXITCODE
+    $proc = Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait -PassThru
+    exit $proc.ExitCode
 }
 
 # --- Verify required zip files -----------------------------------------------
