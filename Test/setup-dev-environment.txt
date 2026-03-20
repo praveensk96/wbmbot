@@ -165,20 +165,11 @@ function Invoke-Wsl {
     }
 }
 
-# Detect package manager (apt / dnf / pacman)
-$pkgInstall = @"
-if   command -v zypper  &>/dev/null; then sudo zypper --non-interactive install zsh unzip curl
-elif command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y zsh unzip curl
-elif command -v dnf     &>/dev/null; then sudo dnf install -y zsh unzip curl
-elif command -v pacman  &>/dev/null; then sudo pacman -Sy --noconfirm zsh unzip curl
-else echo 'Unsupported package manager' >&2; exit 1
-fi
-"@
-Invoke-Wsl $pkgInstall
+Invoke-Wsl "sudo zypper --non-interactive install zsh unzip curl"
 Write-Success "ZSH and dependencies installed"
 
-# Install Starship (non-interactive)
-Invoke-Wsl "curl -sS https://starship.rs/install.sh | sh -s -- --yes"
+# Install Starship via zypper
+Invoke-Wsl "sudo zypper --non-interactive install starship"
 Write-Success "Starship installed"
 
 # ===========================================================================
