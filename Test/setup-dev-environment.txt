@@ -95,9 +95,7 @@ $fontsFolder  = "$env:SystemRoot\Fonts"
 $fontsRegKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
 
 # Notify all running apps about the font change after installation
-$notifySource = @"
-using System;
-using System.Runtime.InteropServices;
+$notifySource = @'
 public static class FontHelper {
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
     private static extern IntPtr SendMessageTimeout(
@@ -110,8 +108,8 @@ public static class FontHelper {
                            IntPtr.Zero, 2u, 1000u, out result);
     }
 }
-"@
-Add-Type -TypeDefinition $notifySource -Language CSharp
+'@
+Add-Type -TypeDefinition $notifySource -Language CSharp -UsingNamespace System, System.Runtime.InteropServices
 
 $installed = 0
 foreach ($font in $fontFiles) {
@@ -220,6 +218,89 @@ $zshrcBlock = @'
 # zsh-autosuggestions
 [ -f ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh ] && \
     source ~/.zsh/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+# ── Git aliases (oh-my-zsh style) ────────────────────────────────────────
+alias g='git'
+alias ga='git add'
+alias gaa='git add --all'
+alias gap='git add --patch'
+alias gb='git branch'
+alias gba='git branch --all'
+alias gbd='git branch --delete'
+alias gbD='git branch --delete --force'
+alias gc='git commit --verbose'
+alias gc!='git commit --verbose --amend'
+alias gcn!='git commit --verbose --amend --no-edit'
+alias gca='git commit --verbose --all'
+alias gca!='git commit --verbose --all --amend'
+alias gcan!='git commit --verbose --all --amend --no-edit'
+alias gcam='git commit --all --message'
+alias gcmsg='git commit --message'
+alias gco='git checkout'
+alias gcb='git checkout -b'
+alias gcl='git clone --recurse-submodules'
+alias gcp='git cherry-pick'
+alias gcpa='git cherry-pick --abort'
+alias gcpc='git cherry-pick --continue'
+alias gd='git diff'
+alias gds='git diff --staged'
+alias gdt='git diff-tree --no-commit-id --name-only -r'
+alias gf='git fetch'
+alias gfa='git fetch --all --prune --jobs=10'
+alias gl='git pull'
+alias glg='git log --stat'
+alias glgg='git log --graph'
+alias glgga='git log --graph --decorate --all'
+alias glo='git log --oneline --decorate'
+alias glog='git log --oneline --decorate --graph'
+alias gloga='git log --oneline --decorate --graph --all'
+alias gm='git merge'
+alias gma='git merge --abort'
+alias gp='git push'
+alias gpd='git push --dry-run'
+alias gpf='git push --force-with-lease --force-if-includes'
+alias gpf!='git push --force'
+alias gpsup='git push --set-upstream origin $(git branch --show-current)'
+alias gr='git remote'
+alias gra='git remote add'
+alias grb='git rebase'
+alias grba='git rebase --abort'
+alias grbc='git rebase --continue'
+alias grbi='git rebase --interactive'
+alias grh='git reset'
+alias grhh='git reset --hard'
+alias grm='git rm'
+alias grmc='git rm --cached'
+alias grs='git restore'
+alias grss='git restore --staged'
+alias gsh='git show'
+alias gss='git status --short'
+alias gst='git status'
+alias gsta='git stash push'
+alias gstaa='git stash apply'
+alias gstd='git stash drop'
+alias gstl='git stash list'
+alias gstp='git stash pop'
+alias gsw='git switch'
+alias gswc='git switch --create'
+alias gts='git tag --sign'
+alias gtv='git tag | sort -V'
+alias gwch='git whatchanged -p --abbrev-commit --pretty=medium'
+
+# ── Alias expansion (press Space to expand aliases inline) ────────────────
+# Stores all alias names for lookup
+typeset -a _expand_aliases
+_expand_aliases=(${(k)aliases})
+
+function _expand_alias() {
+    if [[ $_expand_aliases[(Ie)$LBUFFER] -gt 0 ]]; then
+        zle _expand_alias
+        zle expand-word
+    fi
+    zle self-insert
+}
+zle -N _expand_alias
+bindkey -M main ' ' _expand_alias
 
 # zsh-syntax-highlighting  (must be sourced last)
 [ -f ~/.zsh/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ] && \
