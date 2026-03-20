@@ -6,7 +6,7 @@ ZSH_SYNTAX_HIGHLIGHTING_ZIP="$2"
 STARSHIP_TOML="$3"
 
 echo ">> Installing ZSH and dependencies..."
-sudo zypper --non-interactive install zsh unzip curl starship
+sudo zypper --non-interactive install zsh unzip curl starship jq
 
 extract_plugin() {
     local plugin_name=$1
@@ -146,3 +146,24 @@ fi
 echo ">> Setting ZSH as the default shell..."
 sudo chsh -s "$(which zsh)" "$USER"
 echo "   [OK] Default shell changed to ZSH"
+
+echo ">> Updating VS Code settings in WSL..."
+VSCODE_MACHINE_SETTINGS_DIR=~/.vscode-server/data/Machine
+VSCODE_MACHINE_SETTINGS_FILE=$VSCODE_MACHINE_SETTINGS_DIR/settings.json
+
+mkdir -p "$VSCODE_MACHINE_SETTINGS_DIR"
+if [ ! -f "$VSCODE_MACHINE_SETTINGS_FILE" ]; then
+    echo "{}" > "$VSCODE_MACHINE_SETTINGS_FILE"
+fi
+
+if ! jq -e . "$VSCODE_MACHINE_SETTINGS_FILE" >/dev/null 2>&1; then
+    echo "{}" > "$VSCODE_MACHINE_SETTINGS_FILE"
+fi
+
+jq '. + {
+  "editor.fontFamily": "'\''Fira Code'\'', '\''Cascadia Code'\'', Consolas, monospace",
+  "editor.fontLigatures": true,
+  "terminal.integrated.fontFamily": "'\''Fira Code'\''"
+}' "$VSCODE_MACHINE_SETTINGS_FILE" > "$VSCODE_MACHINE_SETTINGS_FILE.tmp" && mv "$VSCODE_MACHINE_SETTINGS_FILE.tmp" "$VSCODE_MACHINE_SETTINGS_FILE"
+
+echo "   [OK] VS Code WSL settings updated"

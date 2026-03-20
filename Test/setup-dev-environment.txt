@@ -181,56 +181,8 @@ if ($LASTEXITCODE -ne 0) {
 Write-Success "WSL setup completed successfully"
 
 # ===========================================================================
-# 3. UPDATE VS CODE settings.json
+# Done
 # ===========================================================================
-
-Write-Step "Updating VS Code settings.json"
-
-$candidatePaths = @(
-    "$env:APPDATA\Code\User\settings.json"           # VS Code (stable)
-    "$env:APPDATA\Code - Insiders\User\settings.json" # VS Code Insiders
-)
-
-$fontPatches = [ordered]@{
-    "editor.fontFamily"              = "'Fira Code', 'Cascadia Code', Consolas, monospace"
-    "editor.fontLigatures"           = $true
-    "terminal.integrated.fontFamily" = "'Fira Code'"
-}
-
-$updatedAny = $false
-
-foreach ($settingsPath in $candidatePaths) {
-    if (-not (Test-Path $settingsPath)) { continue }
-
-    # Read raw text; strip JSONC single-line comments before deserialising
-    $raw      = Get-Content -Raw -Path $settingsPath -Encoding UTF8
-    $stripped = $raw -replace '(?m)^\s*//[^\r\n]*', ''
-
-    try {
-        $settings = $stripped | ConvertFrom-Json
-    } catch {
-        Write-Warn "Could not parse $settingsPath -- skipping: $_"
-        continue
-    }
-
-    foreach ($key in $fontPatches.Keys) {
-        $settings | Add-Member -NotePropertyName $key -NotePropertyValue $fontPatches[$key] -Force
-    }
-
-    # Write back as valid JSON (VS Code tolerates fully valid JSON in settings.json)
-    $settings | ConvertTo-Json -Depth 20 | Set-Content -Path $settingsPath -Encoding UTF8
-    Write-Success "Updated: $settingsPath"
-    $updatedAny = $true
-}
-
-if (-not $updatedAny) {
-    Write-Warn "No VS Code settings.json found -- creating one at the stable path"
-    $stablePath = "$env:APPDATA\Code\User\settings.json"
-    $dir = Split-Path $stablePath
-    if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $fontPatches | ConvertTo-Json -Depth 5 | Set-Content -Path $stablePath -Encoding UTF8
-    Write-Success "Created: $stablePath"
-}
 
 } catch {
     Write-Fail "Unexpected error: $_"
