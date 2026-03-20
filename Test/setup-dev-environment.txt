@@ -37,6 +37,15 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$global:LASTEXITCODE = 0
+
+# Catch any unhandled terminating error anywhere in the script
+trap {
+    Write-Host "`n   [XX]  Fatal error: $_" -ForegroundColor Red
+    Write-Host "   [XX]  At: $($_.InvocationInfo.PositionMessage)" -ForegroundColor Red
+    Read-Host "`nPress Enter to exit"
+    exit 1
+}
 
 # --- Console helpers ---------------------------------------------------------
 
@@ -51,7 +60,7 @@ $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIde
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) {
     Write-Warn "Not running as Administrator -- relaunching elevated..."
     $escapedScript = $PSCommandPath -replace '"', '\"'
-    $argList = "-NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
+    $argList = "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$escapedScript`""
     if ($ZipFilesPath -ne $PSScriptRoot)  { $argList += " -ZipFilesPath `"$ZipFilesPath`""  }
     if ($WslDistro)                        { $argList += " -WslDistro `"$WslDistro`""         }
     $proc = Start-Process powershell.exe -ArgumentList $argList -Verb RunAs -Wait -PassThru
@@ -66,10 +75,11 @@ $required = [ordered]@{
     SyntaxHighlighting = "zsh-syntax-highlighting.zip"
 }
 
-foreach ($key in $required.Keys) {
+foreach ($key in @($required.Keys)) {
     $fullPath = Join-Path $ZipFilesPath $required[$key]
     if (-not (Test-Path $fullPath)) {
         Write-Fail "Required file not found: $fullPath"
+        Read-Host "`nPress Enter to exit"
         exit 1
     }
     $required[$key] = $fullPath   # resolve to absolute path
@@ -96,6 +106,8 @@ $fontsRegKey  = "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"
 
 # Notify all running apps about the font change after installation
 $notifySource = @'
+using System;
+using System.Runtime.InteropServices;
 public static class FontHelper {
     [DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)]
     private static extern IntPtr SendMessageTimeout(
@@ -109,7 +121,7 @@ public static class FontHelper {
     }
 }
 '@
-Add-Type -TypeDefinition $notifySource -Language CSharp -UsingNamespace System, System.Runtime.InteropServices
+Add-Type -TypeDefinition $notifySource -Language CSharp
 
 $installed = 0
 foreach ($font in $fontFiles) {
@@ -143,6 +155,8 @@ if ($WslDistro) { $wslPrefix = @("--distribution", $WslDistro) }
 
 function Invoke-Wsl {
     param([string] $Command, [switch] $IgnoreErrors)
+    # Strip Windows CR so bash receives clean LF-only line endings
+    $Command = $Command -replace "`r`n", "`n" -replace "`r", "`n"
     # Run through bash so we can use shell features like pipes and &&
     $wslArgs = $wslPrefix + @("--", "bash", "-lc", $Command)
     & wsl @wslArgs
@@ -153,7 +167,8 @@ function Invoke-Wsl {
 
 # Detect package manager (apt / dnf / pacman)
 $pkgInstall = @"
-if   command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y zsh unzip curl
+if   command -v zypper  &>/dev/null; then sudo zypper --non-interactive install zsh unzip curl
+elif command -v apt-get &>/dev/null; then sudo apt-get update -qq && sudo apt-get install -y zsh unzip curl
 elif command -v dnf     &>/dev/null; then sudo dnf install -y zsh unzip curl
 elif command -v pacman  &>/dev/null; then sudo pacman -Sy --noconfirm zsh unzip curl
 else echo 'Unsupported package manager' >&2; exit 1
@@ -395,6 +410,10 @@ if (-not $updatedAny) {
     Write-Success "Created: $stablePath"
 }
 
+} catch {
+    Write-Fail "Unexpected error: $_"
+    Read-Host "`nPress Enter to exit"
+    exit 1
 } finally {
     # --- Cleanup -------------------------------------------------------------
     Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
@@ -409,3 +428,4 @@ Write-Host "    * Open a new WSL terminal -- ZSH + Starship will be active" -For
 Write-Host "    * Reload VS Code to pick up the new FiraCode font settings" -ForegroundColor Gray
 Write-Host "=======================================================" -ForegroundColor Cyan
 Write-Host ""
+Read-Host "`nPress Enter to exit"
