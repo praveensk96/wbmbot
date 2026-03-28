@@ -49,6 +49,11 @@ class ParserConfig:
     llm_max_input_chars: int = 24_000  # max chars sent per LLM call (context-window guard, ~6K tokens)
     content_loss_warn_threshold: float = 0.15   # warn if output retains < (1-threshold) of body chars
 
+    # ── Table & footnote handling ─────────────────────────────────────────
+    merge_tables: bool = True             # Merge continuation tables across pages
+    inline_footnotes: bool = True         # Detect footnote defs and inline references
+    superscript_size_ratio: float = 0.85  # Chars with size < body*ratio = superscript
+
     # ── Auto-mode LLM fallback thresholds ─────────────────────────────────
     auto_min_retention_pct: float = 85.0   # trigger if content_retention_pct < this
     auto_max_empty_drop_ratio: float = 0.30  # trigger if empty_drops / total_blocks > this

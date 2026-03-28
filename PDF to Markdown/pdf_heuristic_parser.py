@@ -259,6 +259,131 @@ class HeuristicPDFParser:
             return False
         return self._normalize_hf(block["text"]) in patterns
 
+    # ── Footnote detection & inlining ────────────────────────────────────────
+
+    _FOOTNOTE_URL_RE = re.compile(
+        r"(\d{1,3})\s+((?:https?://|mailto:)\S+)"
+    )
+
+    def _extract_footnote_defs(
+        self, blocks: list[dict], hf_patterns: set
+    ) -> dict[str, str]:
+        """
+        Find footnote definitions (number + URL/email) in footer-zone blocks.
+
+        Marks pure-footnote blocks with ``is_footnote_def=True`` so they can be
+        excluded from the final Markdown output.
+
+        Returns ``{number_string: URL_or_text}`` mapping.
+        """
+        if not self.cfg.inline_footnotes:
+            return {}
+
+        footnotes: dict[str, str] = {}
+        for blk in blocks:
+            if blk.get("is_table") or self._is_hf(blk, hf_patterns):
+                continue
+            if blk["zone"] != "footer":
+                continue
+            text = blk["text"]
+            matches = list(self._FOOTNOTE_URL_RE.finditer(text))
+            if not matches:
+                continue
+            for m in matches:
+                footnotes[m.group(1)] = m.group(2)
+            # If the block is *only* footnote definitions, mark for removal
+            stripped = self._FOOTNOTE_URL_RE.sub("", text).strip()
+            stripped = re.sub(r"\d{1,3}", "", stripped).strip()
+            if len(stripped) < 5:
+                blk["is_footnote_def"] = True
+
+        return footnotes
+
+    def _inline_footnote_refs(
+        self, text: str, footnotes: dict[str, str]
+    ) -> str:
+        """
+        Replace embedded footnote numbers with Markdown ``[^N]`` references.
+
+        Only matches a footnote number that is directly attached to a preceding
+        non-digit, non-whitespace character (e.g. ``Kontaktformular21`` →
+        ``Kontaktformular[^21]``) to avoid false positives on standalone numbers.
+        """
+        if not footnotes:
+            return text
+        # Process longer numbers first to avoid partial matches
+        for fn_num in sorted(footnotes, key=lambda x: (-len(x), -int(x))):
+            pattern = r"(?<=[^\s\d])" + re.escape(fn_num) + r"(?!\d)"
+            text = re.sub(pattern, f"[^{fn_num}]", text)
+        return text
+
+    # ── Cross-page table merging ─────────────────────────────────────────────
+
+    @staticmethod
+    def _normalize_table_header(header: str) -> str:
+        """Normalize a Markdown table header row for fuzzy comparison."""
+        return re.sub(r"\s+", "", header).lower().strip("|")
+
+    def _merge_continuation_tables(self, blocks: list[dict]) -> list[dict]:
+        """
+        Merge tables that span multiple pages when column headers match.
+
+        pdfplumber detects a separate table per page, each with its own header
+        row.  This method concatenates the data rows of continuation tables into
+        the first occurrence and drops the duplicate headers.
+        """
+        if not self.cfg.merge_tables or not blocks:
+            return blocks
+
+        result: list[dict] = []
+        i = 0
+        while i < len(blocks):
+            blk = blocks[i]
+            if not blk.get("is_table"):
+                result.append(blk)
+                i += 1
+                continue
+
+            lines = blk["text"].split("\n")
+            if len(lines) < 3:          # header + separator + ≥1 row
+                result.append(blk)
+                i += 1
+                continue
+
+            header    = lines[0]
+            separator = lines[1]
+            data_rows = list(lines[2:])
+            norm_hdr  = self._normalize_table_header(header)
+
+            # Look ahead for continuation tables with identical headers.
+            # Allow (and discard) header/footer-zone blocks between parts –
+            # these are just page headers/footers that separate the table.
+            j = i + 1
+            while j < len(blocks):
+                nxt = blocks[j]
+                if nxt.get("is_table"):
+                    nxt_lines = nxt["text"].split("\n")
+                    if (
+                        len(nxt_lines) >= 3
+                        and self._normalize_table_header(nxt_lines[0]) == norm_hdr
+                    ):
+                        data_rows.extend(nxt_lines[2:])   # append rows only
+                        j += 1
+                        continue
+                    break          # different table → stop
+                elif nxt["zone"] in ("header", "footer"):
+                    j += 1         # skip HF blocks between table parts
+                    continue
+                else:
+                    break          # body text → stop
+
+            merged = dict(blk)
+            merged["text"] = "\n".join([header, separator] + data_rows)
+            result.append(merged)
+            i = j
+
+        return result
+
     # ── 4 & 5. Heading hierarchy detection ──────────────────────────────────
 
     def _build_heading_map(
@@ -416,14 +541,18 @@ class HeuristicPDFParser:
         body_size: float,
         heading_map: dict,
         toc_map: dict | None = None,
+        footnote_defs: dict[str, str] | None = None,
     ) -> str:
         toc_map = toc_map or {}
+        footnote_defs = footnote_defs or {}
         max_level = len(heading_map)
         lines: list[str] = []
         current_page: int = -1   # tracks last emitted page number
 
         for idx, blk in enumerate(blocks):
             if self._is_hf(blk, hf_patterns):
+                continue
+            if blk.get("is_footnote_def"):
                 continue
 
             text = blk["text"].strip()
@@ -439,11 +568,17 @@ class HeuristicPDFParser:
 
             # Table blocks: emit with surrounding blank lines, skip heading logic
             if blk.get("is_table"):
+                if footnote_defs:
+                    text = self._inline_footnote_refs(text, footnote_defs)
                 if lines:
                     lines.append("")
                 lines.append(text)
                 lines.append("")
                 continue
+
+            # Inline footnote references in body text
+            if footnote_defs:
+                text = self._inline_footnote_refs(text, footnote_defs)
 
             # TOC match takes precedence over heuristic level
             level = toc_map.get(idx) or self._get_heading_level(
@@ -458,6 +593,12 @@ class HeuristicPDFParser:
                 lines.append("")            # blank line after heading
             else:
                 lines.append(text)
+
+        # Append footnote definitions at the end
+        if footnote_defs:
+            lines.append("")
+            for fn_num in sorted(footnote_defs, key=int):
+                lines.append(f"[^{fn_num}]: {footnote_defs[fn_num]}")
 
         md = "\n".join(lines)
         md = re.sub(r"\n{3,}", "\n\n", md)   # collapse excessive blank lines
@@ -559,11 +700,15 @@ class HeuristicPDFParser:
             return ""
 
         hf_patterns = self._detect_hf_patterns(blocks)
+        footnote_defs = self._extract_footnote_defs(blocks, hf_patterns)
+        blocks = self._merge_continuation_tables(blocks)
         body_size, heading_map = self._build_heading_map(blocks)
 
         print(f"  Body text size  : {body_size} pt")
         print(f"  Heading sizes   : {sorted(heading_map, reverse=True)}")
         print(f"  HF patterns     : {len(hf_patterns)} recurring pattern(s) removed")
+        if footnote_defs:
+            print(f"  Footnotes found : {len(footnote_defs)} definition(s)")
 
         toc_map: dict | None = None
         if toc and len(toc) >= self.cfg.min_toc_entries:
@@ -572,13 +717,16 @@ class HeuristicPDFParser:
             matched = len(toc_map)
             print(f"  TOC matches     : {matched} block(s) matched")
 
-        md = self._assemble_markdown(blocks, hf_patterns, body_size, heading_map, toc_map)
+        md = self._assemble_markdown(blocks, hf_patterns, body_size, heading_map, toc_map, footnote_defs)
 
         # ── Content-integrity audit ──────────────────────────────────────────
         hf_blocks   = [b for b in blocks if self._is_hf(b, hf_patterns)]
+        fn_blocks   = [b for b in blocks if b.get("is_footnote_def")]
         body_blocks = [
             b for b in blocks
-            if not self._is_hf(b, hf_patterns) and b["text"].strip()
+            if not self._is_hf(b, hf_patterns)
+            and not b.get("is_footnote_def")
+            and b["text"].strip()
         ]
         chars_in  = sum(len(b["text"]) for b in body_blocks)
         chars_out = len(re.sub(r"\s+", "", re.sub(r"^#{1,6}\s+", "", md, flags=re.MULTILINE)))
