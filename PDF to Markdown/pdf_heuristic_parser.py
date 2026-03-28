@@ -463,6 +463,89 @@ class HeuristicPDFParser:
         md = re.sub(r"\n{3,}", "\n\n", md)   # collapse excessive blank lines
         return md.strip()
 
+    # ── Title detection ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def extract_title_from_pdf_obj(
+        pdf,
+        max_pages: int = 3,
+        max_title_length: int = 80,
+        min_title_length: int = 15,
+    ) -> str | None:
+        """
+        Detect the document title from the first *max_pages* pages by selecting
+        the largest-font text block that is not a TOC entry or section header.
+
+        Returns the title string, or ``None`` if nothing suitable is found.
+        """
+        STOPWORDS = frozenset(
+            ["inhaltsverzeichnis", "inhalt", "verzeichnis", "anhang", "kapitel"]
+        )
+        _DOTTED = re.compile(r"\.{5,}")
+        _SPACES = re.compile(r"\s{2,}")
+
+        candidates: list[dict] = []
+
+        for page_idx, page in enumerate(pdf.pages[:max_pages]):
+            line_infos: list[dict] = []
+
+            for line in page.extract_text_lines(layout=True):
+                text = line.get("text", "").strip()
+                chars = line.get("chars", [])
+                if not text or not chars:
+                    continue
+                # character-length guard (was incorrectly word-count before)
+                if len(text) > max_title_length or len(text) < min_title_length:
+                    continue
+                if text.lower() in STOPWORDS:
+                    continue
+                if _DOTTED.search(text):
+                    continue
+                sizes = [c["size"] for c in chars if "size" in c]
+                if not sizes:
+                    continue
+                avg_size = sum(sizes) / len(sizes)
+                top = min(c["top"] for c in chars)
+                line_infos.append({"text": text, "size": avg_size, "top": top})
+
+            # Merge consecutive lines that share the same font size AND are
+            # vertically adjacent (multi-line titles).  The proximity threshold
+            # is 2.5× the line's own font size to tolerate normal leading.
+            blocks: list[list[dict]] = []
+            current: list[dict] = []
+            for line in line_infos:
+                if not current:
+                    current.append(line)
+                    continue
+                prev = current[-1]
+                same_size = abs(prev["size"] - line["size"]) < 1.0
+                close_vert = (line["top"] - prev["top"]) < prev["size"] * 2.5
+                if same_size and close_vert and len(current) < 5:
+                    current.append(line)
+                else:
+                    blocks.append(current)
+                    current = [line]
+            if current:
+                blocks.append(current)
+
+            for group in blocks:
+                combined = " ".join(x["text"] for x in group)
+                combined = _SPACES.sub(" ", combined.replace("\n", " ").replace("\t", " ")).strip()
+                candidates.append(
+                    {
+                        "text": combined,
+                        "avg_size": sum(x["size"] for x in group) / len(group),
+                        "top": min(x["top"] for x in group),
+                        "page": page_idx + 1,
+                    }
+                )
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda x: (-x["avg_size"], x["page"], x["top"]))
+        return candidates[0]["text"]
+
     # ── Public API ───────────────────────────────────────────────────────────
 
     def parse(self, pdf_path: str) -> str:
@@ -470,6 +553,7 @@ class HeuristicPDFParser:
         toc = self._get_toc(pdf_path)
         with pdfplumber.open(pdf_path) as doc:
             blocks, empty_drops = self._extract_blocks(doc)
+            detected_title = self.extract_title_from_pdf_obj(doc)
 
         if not blocks:
             return ""
@@ -522,6 +606,7 @@ class HeuristicPDFParser:
             content_retention_pct=retention,
             hf_dropped_samples=hf_samples,
             warnings=warnings,
+            detected_title=detected_title,
         )
         print(f"  Content retention : {retention:.1f}%  "
               f"({chars_out:,} / {chars_in:,} body chars)")

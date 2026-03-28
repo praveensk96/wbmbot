@@ -96,5 +96,6 @@ class ParseStats:
     chars_body_input:      int   = 0
     chars_output:          int   = 0
     content_retention_pct: float = 0.0
-    hf_dropped_samples:    list  = field(default_factory=list)
-    warnings:              list  = field(default_factory=list)
+    hf_dropped_samples:    list        = field(default_factory=list)
+    warnings:              list        = field(default_factory=list)
+    detected_title:        str | None  = None

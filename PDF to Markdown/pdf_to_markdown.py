@@ -232,6 +232,13 @@ class PDFToMarkdown:
         else:
             md = self._heuristic.parse(pdf_path)
 
+        # Inject auto-detected title into metadata (never overwrites a caller-supplied value)
+        stats = self._heuristic.last_parse_stats
+        if stats and stats.detected_title and (doc_metadata is None or "title" not in doc_metadata):
+            doc_metadata = dict(doc_metadata or {})
+            doc_metadata["title"] = stats.detected_title
+            print(f"[PDF->MD] Title     : {stats.detected_title!r}")
+
         if doc_metadata:
             meta_comment = (
                 "<!--metadata:\n"
