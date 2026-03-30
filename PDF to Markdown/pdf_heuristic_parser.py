@@ -123,6 +123,36 @@ class HeuristicPDFParser:
                 elif bot_y > ph * (1 - self.cfg.footer_zone):
                     zone = "footer"
 
+                # Detect superscript digits within table region
+                tbl_ss_nums: set[str] = set()
+                try:
+                    tbl_chars = [
+                        c for c in page.chars
+                        if c.get("text", "").strip()
+                        and tbl_bbox[1] <= c.get("top", 0) <= tbl_bbox[3]
+                        and tbl_bbox[0] <= c.get("x0", 0) <= tbl_bbox[2]
+                    ]
+                    if tbl_chars:
+                        tbl_size_cnt = Counter(
+                            round(c["size"], 1) for c in tbl_chars
+                        )
+                        tbl_dom_size = tbl_size_cnt.most_common(1)[0][0]
+                        ss_thr = tbl_dom_size * self.cfg.superscript_size_ratio
+                        digit_run: list[str] = []
+                        for c in sorted(
+                            tbl_chars, key=lambda x: (round(x["top"], 0), x["x0"])
+                        ):
+                            if c["text"].isdigit() and c["size"] < ss_thr:
+                                digit_run.append(c["text"])
+                            else:
+                                if digit_run:
+                                    tbl_ss_nums.add("".join(digit_run))
+                                digit_run = []
+                        if digit_run:
+                            tbl_ss_nums.add("".join(digit_run))
+                except Exception:
+                    pass
+
                 page_blocks.append({
                     "page":        page_num,
                     "text":        "\n".join(md_lines),
@@ -132,6 +162,7 @@ class HeuristicPDFParser:
                     "zone":        zone,
                     "bbox":        (tbl_bbox[0], top_y, tbl_bbox[2], bot_y),
                     "is_table":    True,
+                    "superscript_nums": tbl_ss_nums,
                 })
 
             # ── 1b. Extract text lines, skipping inside table regions ────────
@@ -192,6 +223,20 @@ class HeuristicPDFParser:
                     1,
                 )
 
+                # Detect superscript digit runs (footnote references)
+                ss_nums: set[str] = set()
+                ss_threshold = dom_size * self.cfg.superscript_size_ratio
+                digit_run_txt: list[str] = []
+                for c in all_chars:
+                    if c["text"].isdigit() and c["size"] < ss_threshold:
+                        digit_run_txt.append(c["text"])
+                    else:
+                        if digit_run_txt:
+                            ss_nums.add("".join(digit_run_txt))
+                        digit_run_txt = []
+                if digit_run_txt:
+                    ss_nums.add("".join(digit_run_txt))
+
                 # Bold detection: all chars must have 'Bold' in their fontname.
                 # Guards against mixed-bold paragraphs being tagged as headings.
                 all_bold = all(
@@ -224,6 +269,7 @@ class HeuristicPDFParser:
                     "single_line": is_single_line,
                     "zone":        zone,
                     "bbox":        (0.0, top_y, pw, bot_y),
+                    "superscript_nums": ss_nums,
                 })
 
             # ── Sort all blocks for this page by vertical position ───────────
@@ -300,19 +346,24 @@ class HeuristicPDFParser:
         return footnotes
 
     def _inline_footnote_refs(
-        self, text: str, footnotes: dict[str, str]
+        self, text: str, footnotes: dict[str, str], superscript_nums: set[str]
     ) -> str:
         """
         Replace embedded footnote numbers with Markdown ``[^N]`` references.
 
-        Only matches a footnote number that is directly attached to a preceding
-        non-digit, non-whitespace character (e.g. ``Kontaktformular21`` →
-        ``Kontaktformular[^21]``) to avoid false positives on standalone numbers.
+        Only replaces numbers that were **both** defined as footnotes in the
+        footer zone **and** detected as superscript text (smaller font size)
+        within the current block.  This prevents false positives on version
+        strings like ``6.2.2`` or ``NCD.2.3.04``.
         """
-        if not footnotes:
+        if not footnotes or not superscript_nums:
+            return text
+        # Only act on numbers confirmed as both a footnote def AND superscript
+        active = superscript_nums & set(footnotes.keys())
+        if not active:
             return text
         # Process longer numbers first to avoid partial matches
-        for fn_num in sorted(footnotes, key=lambda x: (-len(x), -int(x))):
+        for fn_num in sorted(active, key=lambda x: (-len(x), -int(x))):
             pattern = r"(?<=[^\s\d])" + re.escape(fn_num) + r"(?!\d)"
             text = re.sub(pattern, f"[^{fn_num}]", text)
         return text
@@ -354,6 +405,10 @@ class HeuristicPDFParser:
             separator = lines[1]
             data_rows = list(lines[2:])
             norm_hdr  = self._normalize_table_header(header)
+            all_ss    = set(blk.get("superscript_nums", set()))
+            # Track (page_0based, row_index) for page marker insertion
+            page_row_breaks: list[tuple[int, int]] = []
+            row_count = len(data_rows)
 
             # Look ahead for continuation tables with identical headers.
             # Allow (and discard) header/footer-zone blocks between parts –
@@ -367,7 +422,11 @@ class HeuristicPDFParser:
                         len(nxt_lines) >= 3
                         and self._normalize_table_header(nxt_lines[0]) == norm_hdr
                     ):
-                        data_rows.extend(nxt_lines[2:])   # append rows only
+                        new_rows = nxt_lines[2:]
+                        page_row_breaks.append((nxt["page"], row_count))
+                        data_rows.extend(new_rows)
+                        row_count += len(new_rows)
+                        all_ss |= nxt.get("superscript_nums", set())
                         j += 1
                         continue
                     break          # different table → stop
@@ -378,11 +437,86 @@ class HeuristicPDFParser:
                     break          # body text → stop
 
             merged = dict(blk)
-            merged["text"] = "\n".join([header, separator] + data_rows)
+            merged_text = "\n".join([header, separator] + data_rows)
+            merged["text"] = self._merge_split_table_rows(merged_text, page_row_breaks)
+            merged["superscript_nums"] = all_ss
+            merged["page_row_breaks"] = page_row_breaks
             result.append(merged)
             i = j
 
         return result
+
+    @staticmethod
+    def _merge_split_table_rows(
+        table_text: str,
+        page_row_breaks: list[tuple[int, int]] | None = None,
+    ) -> str:
+        """
+        Merge table data rows that were split by a page break.
+
+        When a table row is cut across two pages, pdfplumber extracts the
+        continuation part as a new row whose leading columns are empty.
+        This method detects such rows (first cell empty, at least one later
+        cell has content) and appends their content to the previous row.
+
+        After merging, page_row_breaks indices are adjusted in-place to
+        point at the correct merged-row positions.
+        """
+        lines = table_text.split("\n")
+        if len(lines) < 4:   # header + separator + ≥2 data rows needed
+            return table_text
+
+        header    = lines[0]
+        separator = lines[1]
+        data_lines = lines[2:]
+
+        def _split_cells(row: str) -> list[str]:
+            row = row.strip()
+            if row.startswith("|"):
+                row = row[1:]
+            if row.endswith("|"):
+                row = row[:-1]
+            return [c.strip() for c in row.split("|")]
+
+        def _join_cells(cells: list[str]) -> str:
+            return "| " + " | ".join(cells) + " |"
+
+        # Build a mapping: original_data_row_index → merged_row_index
+        orig_to_merged: dict[int, int] = {}
+        merged_rows: list[list[str]] = []
+        for orig_idx, line in enumerate(data_lines):
+            cells = _split_cells(line)
+            if not cells:
+                continue
+            # Continuation row: first cell empty but has content elsewhere
+            if (
+                merged_rows
+                and not cells[0].strip()
+                and any(c.strip() for c in cells[1:])
+            ):
+                prev = merged_rows[-1]
+                for k in range(min(len(prev), len(cells))):
+                    if cells[k].strip():
+                        if prev[k].strip():
+                            prev[k] = prev[k] + " " + cells[k]
+                        else:
+                            prev[k] = cells[k]
+                orig_to_merged[orig_idx] = len(merged_rows) - 1
+            else:
+                orig_to_merged[orig_idx] = len(merged_rows)
+                merged_rows.append(cells)
+
+        # Adjust page_row_breaks to point at merged row indices
+        if page_row_breaks is not None:
+            for brk_idx in range(len(page_row_breaks)):
+                pg, old_row = page_row_breaks[brk_idx]
+                new_row = orig_to_merged.get(old_row, old_row)
+                page_row_breaks[brk_idx] = (pg, new_row)
+
+        result_lines = [header, separator]
+        for cells in merged_rows:
+            result_lines.append(_join_cells(cells))
+        return "\n".join(result_lines)
 
     # ── 4 & 5. Heading hierarchy detection ──────────────────────────────────
 
@@ -569,7 +703,31 @@ class HeuristicPDFParser:
             # Table blocks: emit with surrounding blank lines, skip heading logic
             if blk.get("is_table"):
                 if footnote_defs:
-                    text = self._inline_footnote_refs(text, footnote_defs)
+                    text = self._inline_footnote_refs(
+                        text, footnote_defs,
+                        blk.get("superscript_nums", set()),
+                    )
+                # Insert page markers within merged multi-page tables
+                page_breaks = blk.get("page_row_breaks", [])
+                if page_breaks:
+                    tbl_lines = text.split("\n")
+                    # offset: header(0) + separator(1) → data starts at index 2
+                    inserted: list[str] = []
+                    # Map: merged data-row index → page marker to insert before it
+                    brk_map: dict[int, int] = {}
+                    for pg_0, merged_row_idx in page_breaks:
+                        brk_map.setdefault(merged_row_idx, pg_0 + 1)
+                    for li, line in enumerate(tbl_lines):
+                        data_idx = li - 2   # index into merged data rows
+                        if data_idx >= 0 and data_idx in brk_map:
+                            pg_1 = brk_map[data_idx]
+                            if pg_1 != current_page:
+                                inserted.append(
+                                    self._PAGE_MARKER.format(page=pg_1)
+                                )
+                                current_page = pg_1
+                        inserted.append(line)
+                    text = "\n".join(inserted)
                 if lines:
                     lines.append("")
                 lines.append(text)
@@ -578,7 +736,10 @@ class HeuristicPDFParser:
 
             # Inline footnote references in body text
             if footnote_defs:
-                text = self._inline_footnote_refs(text, footnote_defs)
+                text = self._inline_footnote_refs(
+                    text, footnote_defs,
+                    blk.get("superscript_nums", set()),
+                )
 
             # TOC match takes precedence over heuristic level
             level = toc_map.get(idx) or self._get_heading_level(
